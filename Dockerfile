@@ -1,31 +1,39 @@
-# Python 베이스 이미지
-FROM python:3.11-slim
+# 빌드 스테이지
+FROM gradle:8.5-jdk17 AS builder
 
-# 작업 디렉토리 설정
 WORKDIR /app
 
-# 시스템 패키지 업데이트
-RUN apt-get update && apt-get install -y \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# Gradle 설정 파일 복사
+COPY build.gradle settings.gradle ./
+COPY gradle ./gradle
 
-# Python 의존성 설치
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 의존성 다운로드 (캐싱 최적화)
+RUN gradle dependencies --no-daemon || true
 
 # 소스 코드 복사
-COPY . .
+COPY src ./src
+
+# 애플리케이션 빌드
+RUN gradle bootJar --no-daemon
+
+# 실행 스테이지
+FROM eclipse-temurin:17-jre-alpine
+
+WORKDIR /app
+
+# 빌드된 JAR 파일 복사
+COPY --from=builder /app/build/libs/*.jar app.jar
 
 # 환경 변수
-ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
+ENV SPRING_PROFILES_ACTIVE=prod
 
 # 포트 노출
 EXPOSE 8000
 
 # 헬스체크
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health')" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD wget -q --spider http://localhost:8000/api/v1/health || exit 1
 
-# FastAPI 서버 실행
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Spring Boot 애플리케이션 실행
+ENTRYPOINT ["java", "-jar", "app.jar"]

@@ -10,15 +10,16 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - PYTHONUNBUFFERED=1
+      - SPRING_PROFILES_ACTIVE=prod
       - PORT=8000
       - MARIADB_HOST=${MARIADB_HOST:-mariadb}
       - MARIADB_PORT=${MARIADB_PORT:-3306}
-      - MARIADB_DATABASE=${MARIADB_DATABASE:-recommand_stock}
-      - MARIADB_USER=${MARIADB_USER:-root}
+      - MARIADB_DATABASE=${MARIADB_DATABASE:-recommand_db}
+      - MARIADB_USER=${MARIADB_USER:-recommand_user}
       - MARIADB_PASSWORD=${MARIADB_PASSWORD}
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     networks:
       - recommand-network
 
