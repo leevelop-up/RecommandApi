@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  recommandapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: recommandapi
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORT=8000
+      - MARIADB_HOST=${MARIADB_HOST:-mariadb}
+      - MARIADB_PORT=${MARIADB_PORT:-3306}
+      - MARIADB_DATABASE=${MARIADB_DATABASE:-recommand_stock}
+      - MARIADB_USER=${MARIADB_USER:-root}
+      - MARIADB_PASSWORD=${MARIADB_PASSWORD}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+    networks:
+      - recommand-network
+
+networks:
+  recommand-network:
+    driver: bridge
