@@ -5,10 +5,6 @@ WORKDIR /app
 
 # Gradle 설정 파일 복사
 COPY build.gradle settings.gradle ./
-COPY gradle ./gradle
-
-# 의존성 다운로드 (캐싱 최적화)
-RUN gradle dependencies --no-daemon || true
 
 # 소스 코드 복사
 COPY src ./src
