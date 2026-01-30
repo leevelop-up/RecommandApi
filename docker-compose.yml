@@ -8,7 +8,7 @@ services:
     container_name: recommandapi
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "3001:8000"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
       - PORT=8000
