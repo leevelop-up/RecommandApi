@@ -9,8 +9,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from database import get_db, init_db
-from models import User, ProviderEnum
-from schemas import OAuthCallbackRequest, NaverCallbackRequest, AuthResponse, UserResponse
+from passlib.context import CryptContext
+from models import User, ProviderEnum, Watchlist, Portfolio
+from schemas import (
+    OAuthCallbackRequest, NaverCallbackRequest, AuthResponse, UserResponse,
+    RegisterRequest, LoginRequest,
+    WatchlistAddRequest, WatchlistItem,
+    BuyRequest, SellRequest, PortfolioItem,
+)
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 from jwt_utils import create_access_token, get_current_user
 from oauth import google as google_oauth
 from oauth import kakao as kakao_oauth
@@ -146,6 +154,164 @@ async def get_me(
     if not user:
         raise HTTPException(status_code=404, detail="유저를 찾을 수 없습니다.")
     return UserResponse.model_validate(user)
+
+
+# ── 이메일/비밀번호 Auth ───────────────────────────────────────────────────────
+
+@app.post("/api/auth/register", response_model=AuthResponse)
+async def register(body: RegisterRequest, db: Session = Depends(get_db)):
+    """이메일/비밀번호 회원가입"""
+    if db.query(User).filter(User.email == body.email).first():
+        raise HTTPException(status_code=409, detail="이미 사용 중인 이메일입니다.")
+    user = User(
+        email=body.email,
+        name=body.name or body.email.split("@")[0],
+        provider=ProviderEnum.local,
+        provider_id=body.email,
+        password_hash=pwd_context.hash(body.password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return AuthResponse(
+        success=True,
+        accessToken=_make_token(user),
+        user=UserResponse.model_validate(user),
+    )
+
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+async def login(body: LoginRequest, db: Session = Depends(get_db)):
+    """이메일/비밀번호 로그인"""
+    user = db.query(User).filter(
+        User.email == body.email,
+        User.provider == ProviderEnum.local,
+    ).first()
+    if not user or not user.password_hash or not pwd_context.verify(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다.")
+    return AuthResponse(
+        success=True,
+        accessToken=_make_token(user),
+        user=UserResponse.model_validate(user),
+    )
+
+
+# ── Watchlist ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/watchlist", response_model=list[WatchlistItem])
+async def get_watchlist(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """유저의 관심종목 목록 조회"""
+    user_id = int(current_user["sub"])
+    items = db.query(Watchlist).filter(Watchlist.user_id == user_id).all()
+    return items
+
+
+@app.post("/api/watchlist", response_model=WatchlistItem, status_code=201)
+async def add_to_watchlist(
+    body: WatchlistAddRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """관심종목 추가"""
+    user_id = int(current_user["sub"])
+    existing = db.query(Watchlist).filter(
+        Watchlist.user_id == user_id, Watchlist.ticker == body.ticker
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="이미 관심종목에 추가된 종목입니다.")
+    item = Watchlist(user_id=user_id, ticker=body.ticker, stock_name=body.stock_name)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.delete("/api/watchlist/{ticker}", status_code=204)
+async def remove_from_watchlist(
+    ticker: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """관심종목 삭제"""
+    user_id = int(current_user["sub"])
+    item = db.query(Watchlist).filter(
+        Watchlist.user_id == user_id, Watchlist.ticker == ticker
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="관심종목에 없는 종목입니다.")
+    db.delete(item)
+    db.commit()
+
+
+# ── Portfolio ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/portfolio", response_model=list[PortfolioItem])
+async def get_portfolio(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """유저의 포트폴리오 조회"""
+    user_id = int(current_user["sub"])
+    return db.query(Portfolio).filter(Portfolio.user_id == user_id).all()
+
+
+@app.post("/api/portfolio/buy", response_model=PortfolioItem)
+async def buy_stock(
+    body: BuyRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """종목 매수 (보유량/평균단가 갱신)"""
+    user_id = int(current_user["sub"])
+    holding = db.query(Portfolio).filter(
+        Portfolio.user_id == user_id, Portfolio.ticker == body.ticker
+    ).first()
+    if holding:
+        total_cost = holding.avg_price * holding.quantity + body.price * body.quantity
+        holding.quantity += body.quantity
+        holding.avg_price = total_cost / holding.quantity
+        if body.stock_name:
+            holding.stock_name = body.stock_name
+    else:
+        holding = Portfolio(
+            user_id=user_id,
+            ticker=body.ticker,
+            stock_name=body.stock_name,
+            quantity=body.quantity,
+            avg_price=body.price,
+        )
+        db.add(holding)
+    db.commit()
+    db.refresh(holding)
+    return holding
+
+
+@app.post("/api/portfolio/sell", status_code=200)
+async def sell_stock(
+    body: SellRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """종목 매도 (보유량 감소, 0이 되면 삭제)"""
+    user_id = int(current_user["sub"])
+    holding = db.query(Portfolio).filter(
+        Portfolio.user_id == user_id, Portfolio.ticker == body.ticker
+    ).first()
+    if not holding:
+        raise HTTPException(status_code=404, detail="보유하지 않은 종목입니다.")
+    if body.quantity > holding.quantity:
+        raise HTTPException(status_code=400, detail="보유 수량보다 많이 매도할 수 없습니다.")
+    holding.quantity -= body.quantity
+    if holding.quantity == 0:
+        db.delete(holding)
+        db.commit()
+        return {"message": "전량 매도 완료"}
+    db.commit()
+    db.refresh(holding)
+    return PortfolioItem.model_validate(holding)
 
 
 # ── 기존 API 엔드포인트 ───────────────────────────────────────────────────────
